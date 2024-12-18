@@ -1,0 +1,193 @@
+---
+title: "Jolie McCullough MP Data Assignment"
+output: html_notebook
+---
+
+Below is my guide into my quick data analysis to try to discover potential national trends on the political opinions of incarcerated people, in the context of increasing voting rights for the formerly incarcerated and increasing access for eligible voters incarcerated in jail.
+
+First, I downloaded the full dataset from [The Marshall Project's data notebook](https://observablehq.com/@themarshallproject/survey3-summaries-by-jail). I also pulled in the latest ACS census data (2023 1-year) to get total populations for counties in the U.S.
+
+l pulled in tidyverse and csv files
+
+```{r setup}
+library(tidyverse) # install.packages('tidyverse')
+
+survey = read.csv("full-mp-data.csv", header=TRUE)
+census = read.csv("acs-data.csv", header=TRUE)
+```
+
+**Limitations:** I took a quick look at the `survey` data in RStudio and noticed the question sets still don't overlap – meaning I am unable to make counts for how often people answered one question one way AND answered another question one way. I would love to explore the raw data set, where each survey respondent is listed as a row, so I could compile counts to whatever level of specificity I desire: for example, how many people said they were Democrats AND said they were Hispanic AND approved of labor unions?
+
+I understand each question had different levels of respondents, and some different questions appear to have been asked at different facilities, so this may be why we were not given such data for national trends.
+
+------------------------------------------------------------------------
+
+For a top-level analysis, I decided to first look at answers to two question IDs: `party` and `eligibility_to_vote`.
+
+I split the data up to pull out all the `question_ids` and created data tables for each of the questions I was interested in. I also noted there was data form `answer_set:all-surveys` and `answer_set:both-surveys` here, plus `state:0_ALL_STATES` doubled the count, so I filtered out duplicates.
+
+```{r}
+questions <- survey %>% 
+  group_by(question_ids) %>% 
+  summarize()
+
+#print(questions$question_ids, width=50) #list out each question's id to pull from
+#print(survey %>% group_by(answer_set) %>% summarise(n=n())) #how many were in different answer sets
+
+full_data <- survey %>% 
+  filter(answer_set == "all-surveys", state != "0_ALL_STATES")
+
+party_aff <- full_data %>% 
+  filter(question_ids == "facility_name__party")
+
+eligibility <- full_data %>% 
+  filter(question_ids == "facility_name__eligible_to_vote")
+```
+
+### Party
+
+I limited out the total number of people who associated with each party - eliminating multiple categories for easier viewing/a quick analysis (excluding those who marked themselves as `Independent,Other`, etc.).
+
+```{r}
+party_narrow <- party_aff %>% 
+  filter(party %in% c("Republican", "Independent", "Democrat", "Other"))
+
+party_grouped <- party_narrow %>%   
+  group_by(party) %>%
+  summarise(count = sum(count)) %>% 
+  mutate(pct = count / sum(party_grouped$count)) #get percentages of each group 
+
+party_grouped %>% 
+  ggplot(aes(x=party, y=pct)) + 
+  geom_bar(stat = "identity") +
+  coord_flip() 
+```
+
+Let's look now by state to see if there are any differences
+
+```{r}
+party_state <- party_narrow %>% 
+  group_by(state, party) %>%
+  summarise(count = sum(count))
+
+party_state %>% 
+  ggplot(aes(x=party, y=count)) + 
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_wrap(~state)
+```
+
+**What sticks out to me here:**
+
+-   More than 41% of folks in jail consider themselves Independents. The second most popular choice is Republicans. This contradicts the long-held popular belief that incarcerated people would be more likely to vote Democrat.
+
+-   This pattern seems to hold across all states – even some of the most liberal states (California, Massachussets) had more people in the survey identifying as Republicans than Democrats.
+
+Let's make sure we're not missing something in that second bullet point with the graph view, by finding the party with the highest count in each state
+
+```{r}
+#calculate the party with the most respondents in each state
+party_state %>% 
+  filter(count == max(count))
+```
+
+-   The only place Independents didn't have a higher count was:
+
+    -   MS, where only 6 people answered total and they all identified as Democrats.
+
+I wanted to look at how these vary among big/small towns, as well. So I very quickly pulled in the latest census data by quickly downloading the latest ACS data from [census.gov](https://data.census.gov/table/ACSST1Y2023.S0101?g=010XX00US$0500000). Given time constraints, I focused only on county jails, since I could easily match county names to census designations. **(I later realized not all the counties in the MP data was in the ACS data – I filtered out for counties that didn't get a population pulled in, but with more time, I'd get another, more appropriate data set)**
+
+```{r}
+party_county <- party_narrow %>% 
+  filter(str_detect(facility_name,"(?i)county")) %>% 
+  mutate(
+    pct = mean(pct_of_respondents),
+    state = state.name[match(state,state.abb)], 
+    NAME = str_c(str_sub(facility_name, end = str_locate(facility_name, "(?i)county")[,2]),", ", state) 
+    ) %>% 
+  left_join(
+    census %>% select(NAME, S0101_C01_001E),
+    by="NAME"
+  ) %>% 
+  rename(
+    county_st = NAME,
+    population = S0101_C01_001E
+  ) %>% 
+  mutate( population = as.integer(population))
+```
+
+[NOTES FOR MP: The party data shows Pasco County under state NY instead of what I believe should be FL]{.underline}
+
+This is where the time limit kept me a bit rough – I would love to properly analyze what is rural/suburban/urban area based on housing density, etc., but given time constraints, I just chose cutoffs that have been used in Texas governments – under 50,000 is a rural area, over 250,000 is a major city.
+
+```{r}
+ party_county_type <- party_county %>% 
+    mutate(county_type = case_when(
+      population < 50000 ~ "rural",
+      between(population, 50001, 250000) ~ "urban",
+      population > 250000 ~ "major"
+    )) %>% 
+
+ party_county_type %>% 
+  ggplot(aes(x=party, y=count)) + 
+  geom_bar(stat = "identity") +
+  facet_wrap(~county_type) +
+  coord_flip() 
+```
+
+**Findings:** There were no rural counties (or at least paired in the ACS data – I would run this again using better population data next time). However, as far as medium vs. large counties, there also doesn't seem to be much of a difference in terms of the political parties of incarcerated people, in count or percentages – despite major cities leaning more Democratic.
+
+#### **Second step:**
+
+Since Independents were such a large portion of respondents, I wanted to next look at how those people were leaning in the November election. So I next pulled in `independent_preference_for_dem_rep` data.
+
+```{r}
+ind_pref <- full_data %>% 
+  filter(question_ids == "facility_name__independent_preference_for_dem_rep")
+
+ind_pref %>% 
+  group_by(independent_preference_for_dem_rep,state) %>% 
+  summarise(count = sum(count))
+
+ind_pref %>% 
+  ggplot(aes(x=independent_preference_for_dem_rep, y=count)) + 
+  geom_bar(stat = "identity") +
+  coord_flip() 
+```
+
+**Findings:** Most independents surveyed did not prefer either party, but more would opt for Republican than Democrat - seemingly giving more of an edge to the more conservative party.
+
+### Eligibility
+
+```{r}
+eligibility_grouped <- eligibility %>% 
+  group_by(eligible_to_vote) %>% 
+  summarise(count = sum(count))
+
+eligibility_grouped #let me look at numbers
+
+eligibility_grouped %>% 
+  ggplot(aes(x=eligible_to_vote, y=count)) + 
+  geom_bar(stat = "identity")
+```
+
+Again, I want to look by state to see if there are outliers. Since many of the counts were very small, I went with the average percentage for each state (using percents from each facility)
+
+```{r}
+eligibility_state <- eligibility %>% 
+  group_by(state, eligible_to_vote) %>%
+  summarise(count = sum(count),
+            pct = mean(pct_of_respondents))
+
+eligibility_state %>% 
+  ggplot(aes(x=eligible_to_vote, y=pct)) + 
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_wrap(~state, nrow=7)
+```
+
+**Findings**:
+
+-   More than half of the people in jails across the country who responded to the survey said they were eligible to vote (more than 4.1k).
+
+-   There does seem to be some differences among states; though it does seem to be more likely for southern ones to have more Nos, it's not always the case (GA had more yeses than nos, for example, and other states out of the south had more nos than yeses, like AZ and WI)
